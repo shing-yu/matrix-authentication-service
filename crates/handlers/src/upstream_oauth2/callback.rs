@@ -380,7 +380,7 @@ pub(crate) async fn handler(
     }
 
     let userinfo = if provider.fetch_userinfo {
-        let userinfo_endpoint = lazy_metadata.userinfo_endpoint().await?;
+        let userinfo_endpoint = lazy_metadata.userinfo_endpoint().await?.clone();
         if userinfo_endpoint.host_str() == Some("graph.qq.com") {
             let me_url = format!(
                 "https://graph.qq.com/oauth2.0/me?access_token={}&fmt=json",
@@ -444,7 +444,7 @@ pub(crate) async fn handler(
 
                     mas_oidc_client::requests::userinfo::fetch_userinfo(
                         &client,
-                        userinfo_endpoint,
+                        &userinfo_endpoint,
                         token_response.access_token.as_str(),
                         Some(JwtVerificationData {
                             issuer: provider.issuer.as_deref(),
@@ -458,7 +458,7 @@ pub(crate) async fn handler(
                 None => {
                     mas_oidc_client::requests::userinfo::fetch_userinfo(
                         &client,
-                        userinfo_endpoint,
+                        &userinfo_endpoint,
                         token_response.access_token.as_str(),
                         None,
                     )

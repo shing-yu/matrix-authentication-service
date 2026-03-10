@@ -380,42 +380,86 @@ pub(crate) async fn handler(
     }
 
     let userinfo = if provider.fetch_userinfo {
-        Some(json!(match &provider.userinfo_signed_response_alg {
-            Some(signing_algorithm) => {
-                let jwks = match jwks {
-                    Some(jwks) => jwks,
-                    None => {
-                        mas_oidc_client::requests::jose::fetch_jwks(
-                            &client,
-                            lazy_metadata.jwks_uri().await?,
-                        )
-                        .await?
-                    }
-                };
+        let userinfo_endpoint = lazy_metadata.userinfo_endpoint().await?;
+        if userinfo_endpoint.host_str() == Some("graph.qq.com") {
+            let me_url = format!(
+                "https://graph.qq.com/oauth2.0/me?access_token={}&fmt=json",
+                token_response.access_token.as_str()
+            );
 
-                mas_oidc_client::requests::userinfo::fetch_userinfo(
-                    &client,
-                    lazy_metadata.userinfo_endpoint().await?,
-                    token_response.access_token.as_str(),
-                    Some(JwtVerificationData {
-                        issuer: provider.issuer.as_deref(),
-                        jwks: &jwks,
-                        signing_algorithm,
-                        client_id: &provider.client_id,
-                    }),
-                )
-                .await?
+            let me_resp: serde_json::Value = client
+                .get(&me_url)
+                .send()
+                .await
+                .map_err(|e| RouteError::Internal(Box::new(e)))?
+                .json()
+                .await
+                .map_err(|e| RouteError::Internal(Box::new(e)))?;
+
+            let openid = me_resp["openid"].as_str().unwrap_or_default();
+            let oauth_consumer_key = me_resp["client_id"].as_str().unwrap_or_default();
+
+            let qq_userinfo_url = format!(
+                "{}?access_token={}&oauth_consumer_key={}&openid={}",
+                userinfo_endpoint.as_str(),
+                token_response.access_token.as_str(),
+                oauth_consumer_key,
+                openid
+            );
+
+            let qq_userinfo_resp: serde_json::Value = client
+                .get(&qq_userinfo_url)
+                .send()
+                .await
+                .map_err(|e| RouteError::Internal(Box::new(e)))?
+                .json()
+                .await
+                .map_err(|e| RouteError::Internal(Box::new(e)))?;
+
+            let mut claims = qq_userinfo_resp.as_object().unwrap_or(&serde_json::Map::new()).clone();
+            if !claims.contains_key("sub") {
+                claims.insert("sub".to_string(), serde_json::Value::String(openid.to_string()));
             }
-            None => {
-                mas_oidc_client::requests::userinfo::fetch_userinfo(
-                    &client,
-                    lazy_metadata.userinfo_endpoint().await?,
-                    token_response.access_token.as_str(),
-                    None,
-                )
-                .await?
-            }
-        }))
+
+            Some(serde_json::Value::Object(claims))
+        } else {
+            Some(json!(match &provider.userinfo_signed_response_alg {
+                Some(signing_algorithm) => {
+                    let jwks = match jwks {
+                        Some(jwks) => jwks,
+                        None => {
+                            mas_oidc_client::requests::jose::fetch_jwks(
+                                &client,
+                                lazy_metadata.jwks_uri().await?,
+                            )
+                            .await?
+                        }
+                    };
+
+                    mas_oidc_client::requests::userinfo::fetch_userinfo(
+                        &client,
+                        userinfo_endpoint,
+                        token_response.access_token.as_str(),
+                        Some(JwtVerificationData {
+                            issuer: provider.issuer.as_deref(),
+                            jwks: &jwks,
+                            signing_algorithm,
+                            client_id: &provider.client_id,
+                        }),
+                    )
+                    .await?
+                }
+                None => {
+                    mas_oidc_client::requests::userinfo::fetch_userinfo(
+                        &client,
+                        userinfo_endpoint,
+                        token_response.access_token.as_str(),
+                        None,
+                    )
+                    .await?
+                }
+            }))
+        }
     } else {
         None
     };

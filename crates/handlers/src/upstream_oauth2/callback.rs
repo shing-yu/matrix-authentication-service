@@ -416,9 +416,15 @@ pub(crate) async fn handler(
                 .await
                 .map_err(|e| RouteError::Internal(Box::new(e)))?;
 
-            let mut claims = qq_userinfo_resp.as_object().unwrap_or(&serde_json::Map::new()).clone();
+            let mut claims = qq_userinfo_resp
+                .as_object()
+                .unwrap_or(&serde_json::Map::new())
+                .clone();
             if !claims.contains_key("sub") {
-                claims.insert("sub".to_string(), serde_json::Value::String(openid.to_string()));
+                claims.insert(
+                    "sub".to_string(),
+                    serde_json::Value::String(openid.to_string()),
+                );
             }
 
             Some(serde_json::Value::Object(claims))

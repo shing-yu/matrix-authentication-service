@@ -313,6 +313,13 @@ pub(crate) async fn handler(
 
         let redirect_uri_str = url_builder.upstream_oauth_callback(provider.id).to_string();
 
+        tracing::info!(
+            "Sending to QQ -> client_id: {}, redirect_uri: {}, code: {}",
+            client_id.as_str(),
+            redirect_uri_str.as_str(),
+            code.as_str()
+        );
+
         let req = client.get(token_endpoint.as_str()).query(&[
             ("grant_type", "authorization_code"),
             ("client_id", client_id.as_str()),

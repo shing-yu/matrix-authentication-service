@@ -322,13 +322,38 @@ pub(crate) async fn handler(
             ("fmt", "json"),
         ]);
 
-        let res_json: serde_json::Value = req
+        // 1. 先发送请求，拿到完整的 Response 对象
+        let res = req
             .send()
             .await
-            .map_err(|e| RouteError::Internal(Box::new(e)))?
-            .json()
+            .map_err(|e| RouteError::Internal(Box::new(e)))?;
+
+        // 2. 顺手把 HTTP 状态码拿出来
+        let status = res.status();
+
+        // 3. 把 Body 当作纯文本读取（如果是空响应，这里会得到一个空字符串 ""）
+        let body_text = res
+            .text()
             .await
             .map_err(|e| RouteError::Internal(Box::new(e)))?;
+
+        // 4. 将状态码和原始文本打印到日志！这是破案的关键！
+        tracing::info!("QQ API Status: {}, Body: '{}'", status, body_text);
+
+        // 5. 手动检查是不是遇到了空响应 (EOF)
+        if body_text.trim().is_empty() {
+            return Err(RouteError::Internal(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("QQ API returned empty body! HTTP Status: {}", status),
+            ))));
+        }
+
+        // 6. 确认有内容后，再安全地解析 JSON
+        let res_json: serde_json::Value = serde_json::from_str(&body_text)
+            .map_err(|e| RouteError::Internal(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to parse JSON. Error: {}. Body: {}", e, body_text),
+            ))))?;
 
         if let Some(_) = res_json.get("error") {
             let err_desc = res_json
@@ -451,14 +476,41 @@ pub(crate) async fn handler(
                 token_response.access_token.as_str()
             );
 
-            let me_resp: serde_json::Value = client
+            // 1. 发送请求并获取纯文本响应
+            let me_res = client
                 .get(&me_url)
                 .send()
                 .await
-                .map_err(|e| RouteError::Internal(Box::new(e)))?
-                .json()
+                .map_err(|e| RouteError::Internal(Box::new(e)))?;
+
+            let me_status = me_res.status();
+            let me_text = me_res
+                .text()
                 .await
                 .map_err(|e| RouteError::Internal(Box::new(e)))?;
+
+            // 2. 打印日志，方便排错
+            tracing::info!("QQ /me API Status: {}, Body: '{}'", me_status, me_text);
+
+            if me_text.trim().is_empty() {
+                return Err(RouteError::Internal(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("QQ /me API returned empty body! Status: {}", me_status),
+                ))));
+            }
+
+            // 3. 防御性处理：万一 QQ 还是返回了 callback( {...} ); 格式，把它剥离掉
+            let mut clean_me_text = me_text.trim();
+            if clean_me_text.starts_with("callback(") && clean_me_text.ends_with(");") {
+                clean_me_text = clean_me_text[9..clean_me_text.len() - 2].trim();
+            }
+
+            // 4. 安全解析 JSON
+            let me_resp: serde_json::Value = serde_json::from_str(clean_me_text)
+                .map_err(|e| RouteError::Internal(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("Failed to parse QQ /me JSON: {}. Raw body: {}", e, me_text),
+                ))))?;
 
             let openid = me_resp["openid"].as_str().unwrap_or_default();
             let oauth_consumer_key = me_resp["client_id"].as_str().unwrap_or_default();
@@ -471,14 +523,35 @@ pub(crate) async fn handler(
                 openid
             );
 
-            let qq_userinfo_resp: serde_json::Value = client
+            // 1. 发送请求并获取纯文本响应
+            let userinfo_res = client
                 .get(&qq_userinfo_url)
                 .send()
                 .await
-                .map_err(|e| RouteError::Internal(Box::new(e)))?
-                .json()
+                .map_err(|e| RouteError::Internal(Box::new(e)))?;
+
+            let userinfo_status = userinfo_res.status();
+            let userinfo_text = userinfo_res
+                .text()
                 .await
                 .map_err(|e| RouteError::Internal(Box::new(e)))?;
+
+            // 2. 打印日志
+            tracing::info!("QQ Userinfo API Status: {}, Body: '{}'", userinfo_status, userinfo_text);
+
+            if userinfo_text.trim().is_empty() {
+                return Err(RouteError::Internal(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("QQ Userinfo API returned empty body! Status: {}", userinfo_status),
+                ))));
+            }
+
+            // 3. 安全解析 JSON
+            let qq_userinfo_resp: serde_json::Value = serde_json::from_str(&userinfo_text)
+                .map_err(|e| RouteError::Internal(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("Failed to parse QQ Userinfo JSON: {}. Raw body: {}", e, userinfo_text),
+                ))))?;
 
             let mut claims = qq_userinfo_resp
                 .as_object()

@@ -295,21 +295,85 @@ pub(crate) async fn handler(
         &encrypter,
     )?;
 
-    let redirect_uri = url_builder.upstream_oauth_callback(provider.id);
+    let token_endpoint = lazy_metadata.token_endpoint().await?.clone();
 
-    let token_response = mas_oidc_client::requests::token::request_access_token(
-        &client,
-        client_credentials,
-        lazy_metadata.token_endpoint().await?,
-        AccessTokenRequest::AuthorizationCode(oauth2_types::requests::AuthorizationCodeGrant {
-            code: code.clone(),
-            redirect_uri: Some(redirect_uri),
-            code_verifier: session.code_challenge_verifier.clone(),
-        }),
-        clock.now(),
-        &mut rng,
-    )
-    .await?;
+    let token_response = if token_endpoint.host_str() == Some("graph.qq.com") {
+        let (client_id, client_secret) = match &client_credentials {
+            mas_oidc_client::types::client_credentials::ClientCredentials::ClientSecretPost {
+                client_id,
+                client_secret,
+            } => (client_id.clone(), client_secret.clone()),
+            _ => {
+                return Err(RouteError::Internal(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "QQ requires token_endpoint_auth_method to be client_secret_post",
+                ))));
+            }
+        };
+
+        let redirect_uri_str = url_builder.upstream_oauth_callback(provider.id).to_string();
+
+        let req = client.get(token_endpoint.as_str()).query(&[
+            ("grant_type", "authorization_code"),
+            ("client_id", client_id.as_str()),
+            ("client_secret", client_secret.as_str()),
+            ("code", code.as_str()),
+            ("redirect_uri", redirect_uri_str.as_str()),
+            ("fmt", "json"),
+        ]);
+
+        let res_json: serde_json::Value = req
+            .send()
+            .await
+            .map_err(|e| RouteError::Internal(Box::new(e)))?
+            .json()
+            .await
+            .map_err(|e| RouteError::Internal(Box::new(e)))?;
+
+        if let Some(_) = res_json.get("error") {
+            let err_desc = res_json
+                .get("error_description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("QQ Error");
+            return Err(RouteError::ClientError {
+                error: oauth2_types::errors::ClientErrorCode::ServerError,
+                error_description: Some(err_desc.to_string()),
+            });
+        }
+
+        let access_token = res_json["access_token"]
+            .as_str()
+            .ok_or_else(|| {
+                RouteError::Internal(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "No access_token returned by QQ",
+                )))
+            })?
+            .to_string();
+
+        let mut token_resp = oauth2_types::requests::AccessTokenResponse::new(access_token);
+        if let Some(refresh_token) = res_json.get("refresh_token").and_then(|v| v.as_str()) {
+            token_resp = token_resp.with_refresh_token(refresh_token.to_string());
+        }
+        token_resp
+    } else {
+        let redirect_uri = url_builder.upstream_oauth_callback(provider.id);
+        mas_oidc_client::requests::token::request_access_token(
+            &client,
+            client_credentials,
+            &token_endpoint,
+            oauth2_types::requests::AccessTokenRequest::AuthorizationCode(
+                oauth2_types::requests::AuthorizationCodeGrant {
+                    code: code.clone(),
+                    redirect_uri: Some(redirect_uri),
+                    code_verifier: session.code_challenge_verifier.clone(),
+                },
+            ),
+            clock.now(),
+            &mut rng,
+        )
+        .await?
+    };
 
     let mut jwks = None;
     let mut id_token_claims = None;

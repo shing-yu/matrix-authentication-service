@@ -6,6 +6,12 @@
 name: Build
 
 on:
+  push:
+    branches:
+      - main
+      - "release/**"
+    tags:
+      - "v*"
   workflow_dispatch:
 
 
@@ -23,8 +29,8 @@ env:
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
   SCCACHE_GHA_ENABLED: "true"
   RUSTC_WRAPPER: "sccache"
-  IMAGE: ghcr.io/element-hq/matrix-authentication-service
-  BUILDCACHE: ghcr.io/element-hq/matrix-authentication-service/buildcache
+  IMAGE: ghcr.io/${{ github.repository_owner }}/matrix-authentication-service
+  BUILDCACHE: ghcr.io/${{ github.repository_owner }}/matrix-authentication-service/buildcache
   DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
 
 jobs:

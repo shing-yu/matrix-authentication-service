@@ -295,21 +295,85 @@ pub(crate) async fn handler(
         &encrypter,
     )?;
 
-    let redirect_uri = url_builder.upstream_oauth_callback(provider.id);
+    let token_endpoint = lazy_metadata.token_endpoint().await?.clone();
 
-    let token_response = mas_oidc_client::requests::token::request_access_token(
-        &client,
-        client_credentials,
-        lazy_metadata.token_endpoint().await?,
-        AccessTokenRequest::AuthorizationCode(oauth2_types::requests::AuthorizationCodeGrant {
-            code: code.clone(),
-            redirect_uri: Some(redirect_uri),
-            code_verifier: session.code_challenge_verifier.clone(),
-        }),
-        clock.now(),
-        &mut rng,
-    )
-    .await?;
+    let token_response = if token_endpoint.host_str() == Some("graph.qq.com") {
+        let (client_id, client_secret) = match &client_credentials {
+            mas_oidc_client::types::client_credentials::ClientCredentials::ClientSecretPost {
+                client_id,
+                client_secret,
+            } => (client_id.clone(), client_secret.clone()),
+            _ => {
+                return Err(RouteError::Internal(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "QQ requires token_endpoint_auth_method to be client_secret_post",
+                ))));
+            }
+        };
+
+        let redirect_uri_str = url_builder.upstream_oauth_callback(provider.id).to_string();
+
+        let req = client.get(token_endpoint.as_str()).query(&[
+            ("grant_type", "authorization_code"),
+            ("client_id", client_id.as_str()),
+            ("client_secret", client_secret.as_str()),
+            ("code", code.as_str()),
+            ("redirect_uri", redirect_uri_str.as_str()),
+            ("fmt", "json"),
+        ]);
+
+        let res_json: serde_json::Value = req
+            .send()
+            .await
+            .map_err(|e| RouteError::Internal(Box::new(e)))?
+            .json()
+            .await
+            .map_err(|e| RouteError::Internal(Box::new(e)))?;
+
+        if let Some(_) = res_json.get("error") {
+            let err_desc = res_json
+                .get("error_description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("QQ Error");
+            return Err(RouteError::ClientError {
+                error: oauth2_types::errors::ClientErrorCode::ServerError,
+                error_description: Some(err_desc.to_string()),
+            });
+        }
+
+        let access_token = res_json["access_token"]
+            .as_str()
+            .ok_or_else(|| {
+                RouteError::Internal(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "No access_token returned by QQ",
+                )))
+            })?
+            .to_string();
+
+        let mut token_resp = oauth2_types::requests::AccessTokenResponse::new(access_token);
+        if let Some(refresh_token) = res_json.get("refresh_token").and_then(|v| v.as_str()) {
+            token_resp = token_resp.with_refresh_token(refresh_token.to_string());
+        }
+        token_resp
+    } else {
+        let redirect_uri = url_builder.upstream_oauth_callback(provider.id);
+        mas_oidc_client::requests::token::request_access_token(
+            &client,
+            client_credentials,
+            &token_endpoint,
+            oauth2_types::requests::AccessTokenRequest::AuthorizationCode(
+                oauth2_types::requests::AuthorizationCodeGrant {
+                    code: code.clone(),
+                    redirect_uri: Some(redirect_uri),
+                    code_verifier: session.code_challenge_verifier.clone(),
+                },
+            ),
+            clock.now(),
+            &mut rng,
+        )
+        .await?
+    };
 
     let mut jwks = None;
     let mut id_token_claims = None;
@@ -380,42 +444,92 @@ pub(crate) async fn handler(
     }
 
     let userinfo = if provider.fetch_userinfo {
-        Some(json!(match &provider.userinfo_signed_response_alg {
-            Some(signing_algorithm) => {
-                let jwks = match jwks {
-                    Some(jwks) => jwks,
-                    None => {
-                        mas_oidc_client::requests::jose::fetch_jwks(
-                            &client,
-                            lazy_metadata.jwks_uri().await?,
-                        )
-                        .await?
-                    }
-                };
+        let userinfo_endpoint = lazy_metadata.userinfo_endpoint().await?.clone();
+        if userinfo_endpoint.host_str() == Some("graph.qq.com") {
+            let me_url = format!(
+                "https://graph.qq.com/oauth2.0/me?access_token={}&fmt=json",
+                token_response.access_token.as_str()
+            );
 
-                mas_oidc_client::requests::userinfo::fetch_userinfo(
-                    &client,
-                    lazy_metadata.userinfo_endpoint().await?,
-                    token_response.access_token.as_str(),
-                    Some(JwtVerificationData {
-                        issuer: provider.issuer.as_deref(),
-                        jwks: &jwks,
-                        signing_algorithm,
-                        client_id: &provider.client_id,
-                    }),
-                )
-                .await?
+            let me_resp: serde_json::Value = client
+                .get(&me_url)
+                .send()
+                .await
+                .map_err(|e| RouteError::Internal(Box::new(e)))?
+                .json()
+                .await
+                .map_err(|e| RouteError::Internal(Box::new(e)))?;
+
+            let openid = me_resp["openid"].as_str().unwrap_or_default();
+            let oauth_consumer_key = me_resp["client_id"].as_str().unwrap_or_default();
+
+            let qq_userinfo_url = format!(
+                "{}?access_token={}&oauth_consumer_key={}&openid={}",
+                userinfo_endpoint.as_str(),
+                token_response.access_token.as_str(),
+                oauth_consumer_key,
+                openid
+            );
+
+            let qq_userinfo_resp: serde_json::Value = client
+                .get(&qq_userinfo_url)
+                .send()
+                .await
+                .map_err(|e| RouteError::Internal(Box::new(e)))?
+                .json()
+                .await
+                .map_err(|e| RouteError::Internal(Box::new(e)))?;
+
+            let mut claims = qq_userinfo_resp
+                .as_object()
+                .unwrap_or(&serde_json::Map::new())
+                .clone();
+            if !claims.contains_key("sub") {
+                claims.insert(
+                    "sub".to_string(),
+                    serde_json::Value::String(openid.to_string()),
+                );
             }
-            None => {
-                mas_oidc_client::requests::userinfo::fetch_userinfo(
-                    &client,
-                    lazy_metadata.userinfo_endpoint().await?,
-                    token_response.access_token.as_str(),
-                    None,
-                )
-                .await?
-            }
-        }))
+
+            Some(serde_json::Value::Object(claims))
+        } else {
+            Some(json!(match &provider.userinfo_signed_response_alg {
+                Some(signing_algorithm) => {
+                    let jwks = match jwks {
+                        Some(jwks) => jwks,
+                        None => {
+                            mas_oidc_client::requests::jose::fetch_jwks(
+                                &client,
+                                lazy_metadata.jwks_uri().await?,
+                            )
+                            .await?
+                        }
+                    };
+
+                    mas_oidc_client::requests::userinfo::fetch_userinfo(
+                        &client,
+                        &userinfo_endpoint,
+                        token_response.access_token.as_str(),
+                        Some(JwtVerificationData {
+                            issuer: provider.issuer.as_deref(),
+                            jwks: &jwks,
+                            signing_algorithm,
+                            client_id: &provider.client_id,
+                        }),
+                    )
+                    .await?
+                }
+                None => {
+                    mas_oidc_client::requests::userinfo::fetch_userinfo(
+                        &client,
+                        &userinfo_endpoint,
+                        token_response.access_token.as_str(),
+                        None,
+                    )
+                    .await?
+                }
+            }))
+        }
     } else {
         None
     };

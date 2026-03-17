@@ -6,12 +6,8 @@
 name: Build
 
 on:
-  push:
-    branches:
-      - main
-      - "release/**"
-    tags:
-      - "v*"
+  workflow_dispatch:
+
 
   # Run when there is a label change on the pull request
   # This runs only if the 'Z-Build-Workflow' is added to the pull request

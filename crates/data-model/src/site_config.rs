@@ -39,10 +39,13 @@ pub struct SessionExpirationConfig {
     pub compat_session_inactivity_ttl: Option<Duration>,
 }
 
+/// See [`mas_config::ExperimentalSessionLimitConfig`]
 #[derive(Serialize, Debug, Clone)]
 pub struct SessionLimitConfig {
     pub soft_limit: NonZeroU64,
     pub hard_limit: NonZeroU64,
+    pub max_session_threshold: Option<NonZeroU64>,
+    pub dangerous_hard_limit_eviction: bool,
 }
 
 /// Random site configuration we want accessible in various places.
@@ -111,4 +114,7 @@ pub struct SiteConfig {
 
     /// Limits on the number of application sessions that each user can have
     pub session_limit: Option<SessionLimitConfig>,
+
+    /// Whether the Device Authorization Grant (RFC 8628) is enabled.
+    pub device_code_grant_enabled: bool,
 }

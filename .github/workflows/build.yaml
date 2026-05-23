@@ -232,7 +232,7 @@ jobs:
           # The oci-push registry login requires Tailscale + Vault, which only
           # works for `push` events (PR-labelled runs lack the right OIDC token).
           images: |
-            ghcr.io/element-hq/matrix-authentication-service
+            ${{ env.IMAGE }}
             ${{ github.event_name == 'push' && 'oci-push.vpn.infra.element.io/matrix-authentication-service' || '' }}
           bake-target: docker-metadata-action
           flavor: |
@@ -259,7 +259,7 @@ jobs:
         uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
         with:
           images: |
-            ghcr.io/element-hq/matrix-authentication-service
+            ${{ env.IMAGE }}
             ${{ github.event_name == 'push' && 'oci-push.vpn.infra.element.io/matrix-authentication-service' || '' }}
           bake-target: docker-metadata-action-debug
           flavor: |
@@ -326,7 +326,7 @@ jobs:
       # Comma-separated list of registries to push each per-arch image to.
       # The oci-push registry is only included on `push` events because the
       # Tailscale + Vault login below requires the right OIDC token.
-      IMAGES: ghcr.io/element-hq/matrix-authentication-service${{ github.event_name == 'push' && ',oci-push.vpn.infra.element.io/matrix-authentication-service' || '' }}
+      IMAGES: ${{ env.IMAGE }}${{ github.event_name == 'push' && ',oci-push.vpn.infra.element.io/matrix-authentication-service' || '' }}
 
     steps:
       - name: Set up Docker Buildx
@@ -533,8 +533,8 @@ jobs:
           while IFS= read -r a; do [[ -n $a && $a != *= ]] && args+=(--annotation "$a"); done <<< "$ANNOTATIONS"
 
           docker buildx imagetools create "${args[@]}" \
-            "ghcr.io/element-hq/matrix-authentication-service@$(cat /tmp/digests/regular-amd64)" \
-            "ghcr.io/element-hq/matrix-authentication-service@$(cat /tmp/digests/regular-arm64)" \
+            "${{ env.IMAGE }}@$(cat /tmp/digests/regular-amd64)" \
+            "${{ env.IMAGE }}@$(cat /tmp/digests/regular-arm64)" \
             --metadata-file regular-metadata.json
 
           # `imagetools create` wrote the digest to regular-metadata.json
@@ -551,8 +551,8 @@ jobs:
           while IFS= read -r t; do [[ -n $t ]] && args+=(-t "$t"); done <<< "$TAGS"
           while IFS= read -r a; do [[ -n $a && $a != *= ]] && args+=(--annotation "$a"); done <<< "$ANNOTATIONS"
           docker buildx imagetools create "${args[@]}" \
-            "ghcr.io/element-hq/matrix-authentication-service@$(cat /tmp/digests/debug-amd64)" \
-            "ghcr.io/element-hq/matrix-authentication-service@$(cat /tmp/digests/debug-arm64)" \
+            "${{ env.IMAGE }}@$(cat /tmp/digests/debug-amd64)" \
+            "${{ env.IMAGE }}@$(cat /tmp/digests/debug-arm64)" \
             --metadata-file debug-metadata.json
           echo "digest=$(jq -r '.["containerimage.descriptor"].digest' debug-metadata.json)" >> "$GITHUB_OUTPUT"
 
@@ -568,8 +568,8 @@ jobs:
 
         run: |-
           cosign sign --yes \
-            "ghcr.io/element-hq/matrix-authentication-service@$REGULAR_DIGEST" \
-            "ghcr.io/element-hq/matrix-authentication-service@$DEBUG_DIGEST"
+            "${{ env.IMAGE }}@$REGULAR_DIGEST" \
+            "${{ env.IMAGE }}@$DEBUG_DIGEST"
           cosign sign --yes \
             "oci-push.vpn.infra.element.io/matrix-authentication-service@$REGULAR_DIGEST" \
             "oci-push.vpn.infra.element.io/matrix-authentication-service@$DEBUG_DIGEST"
@@ -623,7 +623,7 @@ jobs:
 
               - Digest:
                 ```
-                ghcr.io/element-hq/matrix-authentication-service@${{ fromJSON(needs.finalize-image.outputs.metadata).regular.digest }}
+                ${{ env.IMAGE }}@${{ fromJSON(needs.finalize-image.outputs.metadata).regular.digest }}
                 oci.element.io/matrix-authentication-service@${{ fromJSON(needs.finalize-image.outputs.metadata).regular.digest }}
                 ```
               - Tags:
@@ -636,7 +636,7 @@ jobs:
 
               - Digest:
                 ```
-                ghcr.io/element-hq/matrix-authentication-service@${{ fromJSON(needs.finalize-image.outputs.metadata).debug.digest }}
+                ${{ env.IMAGE }}@${{ fromJSON(needs.finalize-image.outputs.metadata).debug.digest }}
                 oci.element.io/matrix-authentication-service@${{ fromJSON(needs.finalize-image.outputs.metadata).debug.digest }}
                 ```
               - Tags:
@@ -703,7 +703,7 @@ jobs:
 
               - Digest:
                 ```
-                ghcr.io/element-hq/matrix-authentication-service@${{ fromJSON(needs.finalize-image.outputs.metadata).regular.digest }}
+                ${{ env.IMAGE }}@${{ fromJSON(needs.finalize-image.outputs.metadata).regular.digest }}
                 oci.element.io/matrix-authentication-service@${{ fromJSON(needs.finalize-image.outputs.metadata).regular.digest }}
                 ```
               - Tags:
@@ -716,7 +716,7 @@ jobs:
 
               - Digest:
                 ```
-                ghcr.io/element-hq/matrix-authentication-service@${{ fromJSON(needs.finalize-image.outputs.metadata).debug.digest }}
+                ${{ env.IMAGE }}@${{ fromJSON(needs.finalize-image.outputs.metadata).debug.digest }}
                 oci.element.io/matrix-authentication-service@${{ fromJSON(needs.finalize-image.outputs.metadata).debug.digest }}
                 ```
               - Tags:

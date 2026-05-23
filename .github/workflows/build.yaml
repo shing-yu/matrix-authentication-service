@@ -233,7 +233,7 @@ jobs:
           # works for `push` events (PR-labelled runs lack the right OIDC token).
           images: |
             ${{ env.IMAGE }}
-            ${{ github.event_name == 'push' && 'oci-push.vpn.infra.element.io/matrix-authentication-service' || '' }}
+            ${{ (github.event_name == 'push' && secrets.TS_OAUTH_CLIENT_ID != '') && 'oci-push.vpn.infra.element.io/matrix-authentication-service' || '' }}
           bake-target: docker-metadata-action
           flavor: |
             latest=auto
@@ -260,7 +260,7 @@ jobs:
         with:
           images: |
             ${{ env.IMAGE }}
-            ${{ github.event_name == 'push' && 'oci-push.vpn.infra.element.io/matrix-authentication-service' || '' }}
+            ${{ (github.event_name == 'push' && secrets.TS_OAUTH_CLIENT_ID != '') && 'oci-push.vpn.infra.element.io/matrix-authentication-service' || '' }}
           bake-target: docker-metadata-action-debug
           flavor: |
             latest=auto
@@ -323,10 +323,7 @@ jobs:
     env:
       VERGEN_GIT_DESCRIBE: ${{ needs.compute-version.outputs.describe }}
       SOURCE_DATE_EPOCH: ${{ needs.compute-version.outputs.timestamp }}
-      # Comma-separated list of registries to push each per-arch image to.
-      # The oci-push registry is only included on `push` events because the
-      # Tailscale + Vault login below requires the right OIDC token.
-      IMAGES: ${{ env.IMAGE }}${{ github.event_name == 'push' && ',oci-push.vpn.infra.element.io/matrix-authentication-service' || '' }}
+      HAS_TS_SECRET: ${{ secrets.TS_OAUTH_CLIENT_ID != '' }}
 
     steps:
       - name: Set up Docker Buildx
@@ -347,7 +344,7 @@ jobs:
       # JWT exchange relies on a GitHub OIDC token issued from a `push` event.
       # PR-labelled builds (`Z-Build-Workflow`) skip this and push only to ghcr.
       - name: Tailscale
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && env.HAS_TS_SECRET == 'true'
         uses: tailscale/github-action@53acf823325fe9ca47f4cdaa951f90b4b0de5bb9 # v4.1.1
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
@@ -356,13 +353,13 @@ jobs:
 
       - name: Compute vault jwt role name
         id: vault-jwt-role
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && env.HAS_TS_SECRET == 'true'
         run: |
           echo "role_name=github_service_management_$( echo "${{ github.repository }}" | sed -r 's|[/-]|_|g')" | tee -a "$GITHUB_OUTPUT"
 
       - name: Get team registry token
         id: import-secrets
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && env.HAS_TS_SECRET == 'true'
         uses: hashicorp/vault-action@4c06c5ccf5c0761b6029f56cfb1dcf5565918a3b # v3.4.0
         with:
           url: https://vault.infra.ci.i.element.dev
@@ -375,7 +372,7 @@ jobs:
             services/backend-repositories/secret/data/oci.element.io password | OCI_PASSWORD ;
 
       - name: Login to Element OCI Registry
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && env.HAS_TS_SECRET == 'true'
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           registry: oci-push.vpn.infra.element.io
@@ -399,6 +396,10 @@ jobs:
           # attestations to the image we push.
           # https://github.com/docker/bake-action/issues/239#issuecomment-3828170326
           BUILDX_METADATA_PROVENANCE: disabled
+          # Comma-separated list of registries to push each per-arch image to.
+          # The oci-push registry is only included on `push` events because the
+          # Tailscale + Vault login below requires the right OIDC token.
+          IMAGES: ${{ env.IMAGE }}${{ (github.event_name == 'push' && secrets.TS_OAUTH_CLIENT_ID != '') && ',oci-push.vpn.infra.element.io/matrix-authentication-service' || '' }}
         with:
           files: |
             ./docker-bake.hcl
@@ -449,6 +450,9 @@ jobs:
       - build-image
       - compute-image-meta
 
+    env:
+      HAS_TS_SECRET: ${{ secrets.TS_OAUTH_CLIENT_ID != '' }}
+
     outputs:
       metadata: ${{ steps.output.outputs.metadata }}
 
@@ -482,7 +486,7 @@ jobs:
       # See `build-image` for why the Element OCI Registry login is gated on
       # `push` events.
       - name: Tailscale
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && env.HAS_TS_SECRET == 'true'
         uses: tailscale/github-action@53acf823325fe9ca47f4cdaa951f90b4b0de5bb9 # v4.1.1
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
@@ -491,13 +495,13 @@ jobs:
 
       - name: Compute vault jwt role name
         id: vault-jwt-role
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && env.HAS_TS_SECRET == 'true'
         run: |
           echo "role_name=github_service_management_$( echo "${{ github.repository }}" | sed -r 's|[/-]|_|g')" | tee -a "$GITHUB_OUTPUT"
 
       - name: Get team registry token
         id: import-secrets
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && env.HAS_TS_SECRET == 'true'
         uses: hashicorp/vault-action@4c06c5ccf5c0761b6029f56cfb1dcf5565918a3b # v3.4.0
         with:
           url: https://vault.infra.ci.i.element.dev
@@ -510,7 +514,7 @@ jobs:
             services/backend-repositories/secret/data/oci.element.io password | OCI_PASSWORD ;
 
       - name: Login to Element OCI Registry
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && env.HAS_TS_SECRET == 'true'
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           registry: oci-push.vpn.infra.element.io
@@ -565,14 +569,17 @@ jobs:
         env:
           REGULAR_DIGEST: ${{ steps.regular.outputs.digest }}
           DEBUG_DIGEST: ${{ steps.debug.outputs.digest }}
+          HAS_TS_SECRET: ${{ secrets.TS_OAUTH_CLIENT_ID != '' }}
 
         run: |-
           cosign sign --yes \
             "${{ env.IMAGE }}@$REGULAR_DIGEST" \
             "${{ env.IMAGE }}@$DEBUG_DIGEST"
-          cosign sign --yes \
-            "oci-push.vpn.infra.element.io/matrix-authentication-service@$REGULAR_DIGEST" \
-            "oci-push.vpn.infra.element.io/matrix-authentication-service@$DEBUG_DIGEST"
+          if [ "$HAS_TS_SECRET" = "true" ]; then
+            cosign sign --yes \
+              "oci-push.vpn.infra.element.io/matrix-authentication-service@$REGULAR_DIGEST" \
+              "oci-push.vpn.infra.element.io/matrix-authentication-service@$DEBUG_DIGEST"
+          fi
 
       - name: Output metadata
         id: output

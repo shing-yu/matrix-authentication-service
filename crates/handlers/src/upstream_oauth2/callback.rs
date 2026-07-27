@@ -313,7 +313,7 @@ pub(crate) async fn handler(
 
         let redirect_uri_str = url_builder.upstream_oauth_callback(provider.id).to_string();
 
-        let req = client.get(token_endpoint.as_str()).query(&[
+        let req = client.get(token_endpoint.as_str()).query(&vec![
             ("grant_type", "authorization_code"),
             ("client_id", client_id.as_str()),
             ("client_secret", client_secret.as_str()),

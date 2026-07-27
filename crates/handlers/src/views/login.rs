@@ -13,7 +13,7 @@ use axum::{
 use axum_extra::{extract::Query, typed_header::TypedHeader};
 use hyper::StatusCode;
 use mas_axum_utils::{
-    InternalError, SessionInfoExt,
+    InternalError, RecordAsRequester, SessionInfoExt,
     cookies::CookieJar,
     csrf::{CsrfExt, ProtectedForm},
 };
@@ -347,6 +347,10 @@ pub(crate) async fn post(
 
     repo.save().await?;
 
+    // Attribute the rest of this request (and its log line) to the user that
+    // just logged in.
+    user.maybe_record_as_requester();
+
     PASSWORD_LOGIN_COUNTER.add(1, &[KeyValue::new(RESULT, "success")]);
 
     activity_tracker
@@ -444,7 +448,7 @@ async fn render(
 mod test {
     use hyper::{
         Request, StatusCode,
-        header::{CONTENT_TYPE, LOCATION},
+        header::{CONTENT_TYPE, LOCATION, X_FRAME_OPTIONS},
     };
     use mas_data_model::{
         UpstreamOAuthProviderClaimsImports, UpstreamOAuthProviderOnBackchannelLogout,
@@ -525,6 +529,7 @@ mod test {
                     forward_login_hint: false,
                     ui_order: 0,
                     on_backchannel_logout: UpstreamOAuthProviderOnBackchannelLogout::DoNothing,
+                    registration_token_required: false,
                 },
             )
             .await
@@ -568,6 +573,7 @@ mod test {
                     forward_login_hint: false,
                     ui_order: 1,
                     on_backchannel_logout: UpstreamOAuthProviderOnBackchannelLogout::DoNothing,
+                    registration_token_required: false,
                 },
             )
             .await
@@ -937,5 +943,17 @@ mod test {
         response.assert_header_value(CONTENT_TYPE, "text/html; charset=utf-8");
         assert!(!response.body().contains("Account deleted"));
         assert!(response.body().contains("Invalid credentials"));
+    }
+
+    #[sqlx::test(migrator = "mas_storage_pg::MIGRATOR")]
+    async fn test_x_frame_options(pool: PgPool) {
+        setup();
+        let state = TestState::from_pool(pool).await.unwrap();
+
+        // GET /login should include X-Frame-Options: DENY so the page cannot be
+        // embedded in an iframe on another origin.
+        let response = state.request(Request::get("/login").empty()).await;
+        response.assert_status(StatusCode::OK);
+        response.assert_header_value(X_FRAME_OPTIONS, "DENY");
     }
 }

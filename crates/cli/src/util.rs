@@ -1,3 +1,4 @@
+// Copyright 2026 Element Creations Ltd.
 // Copyright 2024, 2025 New Vector Ltd.
 // Copyright 2022-2024 The Matrix.org Foundation C.I.C.
 //
@@ -58,7 +59,7 @@ pub async fn password_manager_from_config(
     PasswordManager::new(config.minimum_complexity(), schemes)
 }
 
-pub fn mailer_from_config(
+pub async fn mailer_from_config(
     config: &EmailConfig,
     templates: &Templates,
 ) -> Result<Mailer, anyhow::Error> {
@@ -82,10 +83,15 @@ pub fn mailer_from_config(
                 .mode()
                 .context("invalid email configuration: missing mode")?;
 
-            let credentials = match (config.username(), config.password()) {
+            let password = config
+                .password()
+                .await
+                .context("invalid email configuration: unable to read password file")?;
+
+            let credentials = match (config.username(), password) {
                 (Some(username), Some(password)) => Some(mas_email::SmtpCredentials::new(
                     username.to_owned(),
-                    password.to_owned(),
+                    password.clone(),
                 )),
                 (None, None) => None,
                 _ => {
@@ -218,6 +224,14 @@ pub fn site_config_from_config(
             user_session_inactivity_ttl: c.expire_user_sessions.then_some(c.ttl),
         });
 
+    if account_config.registration_token_required {
+        tracing::warn!(
+            "`account.registration_token_required` is deprecated. use \
+            `account.password_registration_token_required` and per-provider \
+            `registration_token_required` instead"
+        );
+    }
+
     Ok(SiteConfig {
         access_token_ttl: experimental_config.access_token_ttl,
         compat_token_ttl: experimental_config.compat_token_ttl,
@@ -229,6 +243,7 @@ pub fn site_config_from_config(
         password_registration_enabled: password_config.enabled()
             && account_config.password_registration_enabled,
         password_registration_email_required: account_config.password_registration_email_required,
+        password_registration_token_required: account_config.password_registration_token_required,
         registration_token_required: account_config.registration_token_required,
         email_change_allowed: account_config.email_change_allowed,
         displayname_change_allowed: account_config.displayname_change_allowed,
@@ -252,6 +267,8 @@ pub fn site_config_from_config(
                 dangerous_hard_limit_eviction: c.dangerous_hard_limit_eviction,
             }),
         device_code_grant_enabled: oauth_config.device_code_grant_enabled,
+        device_code_user_code_auto_fill_enabled: oauth_config
+            .device_code_user_code_auto_fill_enabled,
     })
 }
 
@@ -275,7 +292,7 @@ pub async fn templates_from_config(
     .with_context(|| format!("Failed to load the templates at {}", config.path))
 }
 
-fn database_connect_options_from_config(
+async fn database_connect_options_from_config(
     config: &DatabaseConfig,
     opts: &DatabaseConnectOptions,
 ) -> Result<PgConnectOptions, anyhow::Error> {
@@ -303,6 +320,15 @@ fn database_connect_options_from_config(
 
         if let Some(password) = config.password.as_deref() {
             opts = opts.password(password);
+        }
+
+        if let Some(password_file) = config.password_file.as_deref() {
+            opts = opts.password(
+                tokio::fs::read_to_string(password_file)
+                    .await
+                    .context("could not read database password file")?
+                    .trim(),
+            );
         }
 
         if let Some(database) = config.database.as_deref() {
@@ -374,7 +400,8 @@ fn database_connect_options_from_config(
 /// Create a database connection pool from the configuration
 #[tracing::instrument(name = "db.connect", skip_all)]
 pub async fn database_pool_from_config(config: &DatabaseConfig) -> Result<PgPool, anyhow::Error> {
-    let options = database_connect_options_from_config(config, &DatabaseConnectOptions::default())?;
+    let options =
+        database_connect_options_from_config(config, &DatabaseConnectOptions::default()).await?;
     PgPoolOptions::new()
         .max_connections(config.max_connections.into())
         .min_connections(config.min_connections)
@@ -412,7 +439,8 @@ impl Default for DatabaseConnectOptions {
 pub async fn database_connection_from_config(
     config: &DatabaseConfig,
 ) -> Result<PgConnection, anyhow::Error> {
-    database_connect_options_from_config(config, &DatabaseConnectOptions::default())?
+    database_connect_options_from_config(config, &DatabaseConnectOptions::default())
+        .await?
         .connect()
         .await
         .context("could not connect to the database")
@@ -425,7 +453,8 @@ pub async fn database_connection_from_config_with_options(
     config: &DatabaseConfig,
     options: &DatabaseConnectOptions,
 ) -> Result<PgConnection, anyhow::Error> {
-    database_connect_options_from_config(config, options)?
+    database_connect_options_from_config(config, options)
+        .await?
         .connect()
         .await
         .context("could not connect to the database")
@@ -445,7 +474,7 @@ pub async fn load_policy_factory_dynamic_data_continuously(
     load_policy_factory_dynamic_data(&policy_factory, &*repository_factory).await?;
 
     task_tracker.spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        let mut interval = tokio::time::interval(Duration::from_mins(1));
 
         loop {
             tokio::select! {

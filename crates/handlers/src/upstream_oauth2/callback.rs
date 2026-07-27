@@ -29,7 +29,7 @@ use mas_storage::{
     },
 };
 use mas_templates::{FormPostContext, Templates};
-use oauth2_types::{errors::ClientErrorCode, requests::AccessTokenRequest};
+use oauth2_types::errors::ClientErrorCode;
 use opentelemetry::{Key, KeyValue, metrics::Counter};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -313,14 +313,16 @@ pub(crate) async fn handler(
 
         let redirect_uri_str = url_builder.upstream_oauth_callback(provider.id).to_string();
 
-        let req = client.get(token_endpoint.as_str()).query(&vec![
-            ("grant_type", "authorization_code"),
-            ("client_id", client_id.as_str()),
-            ("client_secret", client_secret.as_str()),
-            ("code", code.as_str()),
-            ("redirect_uri", redirect_uri_str.as_str()),
-            ("fmt", "json"),
-        ]);
+        let mut token_endpoint_url = token_endpoint.clone();
+        token_endpoint_url.query_pairs_mut()
+            .append_pair("grant_type", "authorization_code")
+            .append_pair("client_id", client_id.as_str())
+            .append_pair("client_secret", client_secret.as_str())
+            .append_pair("code", code.as_str())
+            .append_pair("redirect_uri", redirect_uri_str.as_str())
+            .append_pair("fmt", "json");
+
+        let req = client.get(token_endpoint_url);
 
         let res_json: serde_json::Value = req
             .send()
